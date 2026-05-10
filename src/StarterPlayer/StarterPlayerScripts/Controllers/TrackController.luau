@@ -45,7 +45,6 @@ local CurrentWorldName = "JurassicPeriod"
 local OriginalWalkSpeed = 16
 local OriginalJumpPower = 50
 local TrackLightingEffects: any = {}
-local TrackOriginalProperties: { [string]: { [BasePart]: { Material: Enum.Material, Transparency: number } } } = {}
 local TrackFireEffects: any = {}
 
 local CurrentAngle = 0
@@ -160,51 +159,6 @@ local function UpdateCircularPosition(center: Vector3, radius: number, angle: nu
 	local lookAtPos = targetPosition + Vector3.new(-math.sin(angle), 0, math.cos(angle))
 	local finalCFrame = CFrame.lookAt(targetPosition, lookAtPos)
 	return finalCFrame, targetPosition
-end
-
--- =========================================================================
--- Neon track effect (multi-part safe)
--- =========================================================================
-local function ApplyNeonEffectToTrack(worldName: string)
-	local parts = GetVisualTrackParts(worldName)
-	if #parts == 0 then return end
-
-	if not TrackOriginalProperties[worldName] then
-		local saved = {}
-		for _, p in parts do
-			saved[p] = { Material = p.Material, Transparency = p.Transparency }
-		end
-		TrackOriginalProperties[worldName] = saved
-	end
-
-	for _, p in parts do
-		p.Material = Enum.Material.Neon
-		p.Transparency = 0
-		local glow = p:FindFirstChild("TrackGlow")
-		if not glow then
-			local light = Instance.new("PointLight")
-			light.Name = "TrackGlow"
-			light.Color = p.Color
-			light.Brightness = 2
-			light.Range = 30
-			light.Parent = p
-		else
-			(glow :: PointLight).Enabled = true
-		end
-	end
-end
-
-local function RemoveNeonEffectFromTrack(worldName: string)
-	local saved = TrackOriginalProperties[worldName]
-	if not saved then return end
-	for part, original in pairs(saved) do
-		if part and part.Parent then
-			part.Material = original.Material
-			part.Transparency = original.Transparency
-			local glow = part:FindFirstChild("TrackGlow")
-			if glow then (glow :: PointLight).Enabled = false end
-		end
-	end
 end
 
 -- =========================================================================
@@ -431,8 +385,8 @@ local function OnTrackStarted(trackData: any)
 
 	Log(string.format("Track started at %s, total distance: %.2f", tostring(trackData.gateName), trackData.totalDistance))
 
+	BlackScreenTransition.Play(0.5)
 	TweenCameraFOV(TRACK_FOV, FOV_TWEEN_TIME)
-	ApplyNeonEffectToTrack(CurrentWorldName)
 	ApplyTrackLightingEffects()
 	UpdateDistanceDisplay(0, trackData.totalDistance)
 	DisablePlayerControls()
@@ -561,7 +515,6 @@ local function OnTrackEnded(trackData: any)
 	player.CameraMinZoomDistance = 0.5
 	player.CameraMaxZoomDistance = 128
 
-	RemoveNeonEffectFromTrack(CurrentWorldName)
 	RemoveFireEffectFromTrack(CurrentWorldName)
 	RemoveTrackLightingEffects()
 	EnablePlayerControls()

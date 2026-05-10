@@ -11,6 +11,7 @@ local Workspace = game:GetService("Workspace")
 
 local Knit = require(ReplicatedStorage.Packages.Knit)
 local Stats = require(ReplicatedStorage.Modules.Stats)
+local BodyMoversTemplate = ReplicatedStorage:WaitForChild("Assets"):WaitForChild("BodyMovers")
 
 -- ===== Hardcoded values (replaces player-data driven fuel + history) =====
 local HARDCODED_FUEL = 10_000_000           -- "fuel" feeds CalculateTrackParameters → totalDistance
@@ -168,23 +169,14 @@ local function SetupBodyMoversForPlayer(player: Player)
 	attachment.CFrame = CFrame.new()
 	attachment.Parent = rootPart
 
-	local alignPos = Instance.new("AlignPosition")
+	local alignPos = BodyMoversTemplate.AlignPosition:Clone()
 	alignPos.Attachment0 = attachment
-	alignPos.Mode = Enum.PositionAlignmentMode.OneAttachment
 	alignPos.Position = rootPart.Position
-	alignPos.MaxForce = math.huge
-	alignPos.MaxVelocity = math.huge
-	alignPos.Responsiveness = 200
-	alignPos.RigidityEnabled = true
 	alignPos.Parent = rootPart
 
-	local alignOri = Instance.new("AlignOrientation")
+	local alignOri = BodyMoversTemplate.AlignOrientation:Clone()
 	alignOri.Attachment0 = attachment
-	alignOri.Mode = Enum.OrientationAlignmentMode.OneAttachment
 	alignOri.CFrame = rootPart.CFrame
-	alignOri.MaxTorque = math.huge
-	alignOri.Responsiveness = 200
-	alignOri.RigidityEnabled = true
 	alignOri.Parent = rootPart
 end
 
@@ -446,6 +438,28 @@ local function OnPlayerRemoving(player: Player)
 	PlayerRequestDebounce[player.UserId] = nil
 end
 
+local function EstimateDistanceTraveled(trackData): number
+	local elapsed = tick() - trackData.startTime
+	local v0 = trackData.initialSpeed
+	local a1 = trackData.acceleration
+	local maxSpeed = trackData.maxSpeed
+	local rampDur = trackData.rampDuration or Stats.RampDuration
+	local a2 = trackData.postRampAcceleration or 0
+	local vRampEnd = v0 + a1 * rampDur
+	local tPostRampToMax: number = (a2 > 0 and vRampEnd < maxSpeed) and ((maxSpeed - vRampEnd) / a2) or 0
+	local tMaxSpeed = rampDur + tPostRampToMax
+	if elapsed <= rampDur then
+		return v0 * elapsed + 0.5 * a1 * elapsed * elapsed
+	end
+	local dRamp = v0 * rampDur + 0.5 * a1 * rampDur * rampDur
+	local tAfterRamp = elapsed - rampDur
+	if a2 > 0 and elapsed <= tMaxSpeed then
+		return dRamp + vRampEnd * tAfterRamp + 0.5 * a2 * tAfterRamp * tAfterRamp
+	end
+	local dPostRamp = vRampEnd * tPostRampToMax + 0.5 * a2 * tPostRampToMax * tPostRampToMax
+	return dRamp + dPostRamp + maxSpeed * (elapsed - tMaxSpeed)
+end
+
 function TrackService:KnitInit()
 	Players.PlayerRemoving:Connect(OnPlayerRemoving)
 end
@@ -465,11 +479,7 @@ function TrackService:KnitStart()
 			local player = trackData.player
 			if not player or not player:IsDescendantOf(Players) then continue end
 
-			-- Read client-reported distance from rootPart.TrackDistanceTraveled (drives VFX)
-			local character = player.Character
-			local rootPart = character and character:FindFirstChild("HumanoidRootPart")
-			local distanceValue = rootPart and rootPart:FindFirstChild("TrackDistanceTraveled")
-			local currentDistance = (distanceValue and distanceValue:IsA("NumberValue") and distanceValue.Value) or 0
+			local currentDistance = EstimateDistanceTraveled(trackData)
 
 			local elapsedTime = currentTime - trackData.startTime
 			TrackVFXService:UpdateVFX(player, currentDistance, HARDCODED_PLAYER_MAX_DISTANCE, elapsedTime)
