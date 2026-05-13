@@ -13,10 +13,10 @@ Stats.NormalWalkSpeed = 16
 Stats.BaseSpeed = 50
 Stats.MaxTrackTime = 45
 Stats.RampDuration = 15
-Stats.InitialSpeed = 20
-Stats.RampTargetSpeed = 100
-Stats.MaxPhysicalSpeed = 105
-Stats.BaseAcceleration = 35
+Stats.InitialSpeed = 150
+Stats.RampTargetSpeed = 1_650
+Stats.MaxPhysicalSpeed =  2500
+Stats.BaseAcceleration = 150
 
 -- Overdrive
 Stats.OverdriveTimeframe = 5

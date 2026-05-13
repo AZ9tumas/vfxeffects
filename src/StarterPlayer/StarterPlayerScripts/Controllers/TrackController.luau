@@ -12,6 +12,7 @@ local ContextActionService = game:GetService("ContextActionService")
 local TweenService = game:GetService("TweenService")
 local Lighting = game:GetService("Lighting")
 local RunService = game:GetService("RunService")
+local PhysicsService = game:GetService("PhysicsService")
 
 local Knit = require(ReplicatedStorage:WaitForChild("Packages"):WaitForChild("Knit"))
 local Stats = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("Stats"))
@@ -19,6 +20,15 @@ local TrackRunVFXConfig = require(ReplicatedStorage.Modules.TrackRunVFXConfig)
 local WormHoleVFX = require(ReplicatedStorage.Modules.WormHoleVFX)
 local BlackScreenTransition = require(ReplicatedStorage.Modules.BlackScreenTransition)
 local BodyMoversTemplate = ReplicatedStorage:WaitForChild("Assets"):WaitForChild("BodyMovers")
+
+-- Collision groups so TrackChar and the (hidden) original char pass through
+-- each other. Registered once at module load; safe to call again if already
+-- registered (errors are swallowed by pcall).
+do
+	pcall(function() PhysicsService:RegisterCollisionGroup("TrackChar") end)
+	pcall(function() PhysicsService:RegisterCollisionGroup("OriginalChar") end)
+	pcall(function() PhysicsService:CollisionGroupSetCollidable("TrackChar", "OriginalChar", false) end)
+end
 
 local player = Players.LocalPlayer
 local PlayerGui = player:WaitForChild("PlayerGui")
@@ -56,8 +66,8 @@ local LapCount = 0
 -- TrackChar (client-side clone) state
 local TrackChar: Model? = nil
 local TrackCharHRP: BasePart? = nil
+local TrackCharHum: Humanoid? = nil
 local TrackCharYOffset: number = 0
-local OriginalHRPWasAnchored: boolean = false
 local OriginalLocalTransparencies: { [BasePart]: number } = {}
 local ClientTrackY: number = 0
 
@@ -277,6 +287,14 @@ local function BuildTrackChar(original_char: Model): (Model?, BasePart?, number)
 		end
 	end
 
+	-- Assign TrackChar parts to the "TrackChar" collision group so the engine
+	-- ignores collisions between it and the hidden original character.
+	for _, d in clone:GetDescendants() do
+		if d:IsA("BasePart") then
+			PhysicsService:SetPartCollisionGroup(d, "TrackChar")
+		end
+	end
+
 	clone.Parent = workspace
 
 	local hrp = clone:FindFirstChild("HumanoidRootPart") :: BasePart?
@@ -311,7 +329,7 @@ local function AttachBodyMoversTo(hrp: BasePart)
 end
 
 local function SetupTrackCharRun(originalChar: Model, trackData: any)
-	local originalHRP = originalChar:FindFirstChild("HumanoidRootPart")
+	local originalHRP = originalChar:FindFirstChild("HumanoidRootPart") :: BasePart
 	if not originalHRP or not originalHRP:IsA("BasePart") then return end
 
 	local clone, cloneHRP, hrpToBottom = BuildTrackChar(originalChar)
@@ -332,22 +350,24 @@ local function SetupTrackCharRun(originalChar: Model, trackData: any)
 
 	-- Anchor original HRP so we can drive its CFrame locally each frame
 	-- without physics fighting back; server-attached VFX (Trail/Aura) follow.
-	OriginalHRPWasAnchored = (originalHRP :: BasePart).Anchored
-	;(originalHRP :: BasePart).Anchored = true
+	originalHRP.Anchored = true
+
+	-- Assign original character parts to the "OriginalChar" collision group so
+	-- the engine ignores collisions between it and the TrackChar.
+	for _, d in originalChar:GetDescendants() do
+		if d:IsA("BasePart") then
+			PhysicsService:SetPartCollisionGroup(d, "OriginalChar")
+		end
+	end
 
 	-- LocalTransparencyModifier hides original only on this client.
 	HideOriginalCharacterLocally(originalChar)
 
-	-- Camera follows TrackChar
+	TrackCharHum = clone:FindFirstChildOfClass("Humanoid")
 	local camera = workspace.CurrentCamera
-	local cloneHum = clone:FindFirstChildOfClass("Humanoid")
 	if camera then
-		camera.CameraType = Enum.CameraType.Custom
-		if cloneHum then
-			camera.CameraSubject = cloneHum
-		else
-			camera.CameraSubject = cloneHRP
-		end
+		-- Scriptable gives us full CFrame control; the default camera module is bypassed.
+		camera.CameraType = Enum.CameraType.Scriptable
 	end
 end
 
@@ -357,7 +377,16 @@ local function TeardownTrackCharRun()
 	local originalChar = player.Character
 	local originalHRP = originalChar and originalChar:FindFirstChild("HumanoidRootPart")
 	if originalHRP and originalHRP:IsA("BasePart") then
-		(originalHRP :: BasePart).Anchored = OriginalHRPWasAnchored
+		originalHRP.Anchored = false
+	end
+
+	-- Restore original character parts back to the Default collision group.
+	if originalChar then
+		for _, d in originalChar:GetDescendants() do
+			if d:IsA("BasePart") then
+				PhysicsService:SetPartCollisionGroup(d, "Default")
+			end
+		end
 	end
 
 	if TrackChar then
@@ -365,6 +394,7 @@ local function TeardownTrackCharRun()
 	end
 	TrackChar = nil
 	TrackCharHRP = nil
+	TrackCharHum = nil
 	TrackCharYOffset = 0
 	ClientTrackY = 0
 end
@@ -601,19 +631,28 @@ local function OnTrackStarted(trackData: any)
 		SetupTrackCharRun(originalChar, trackData)
 	end
 
-	TweenCameraFOV(TRACK_FOV, FOV_TWEEN_TIME)
-	ApplyTrackLightingEffects()
+	--TweenCameraFOV(TRACK_FOV, FOV_TWEEN_TIME)
+	--ApplyTrackLightingEffects()
 	UpdateDistanceDisplay(0, trackData.totalDistance)
 	DisablePlayerControls()
 	cancelButton.Visible = true
 
-	RunService:BindToRenderStep(RENDER_STEP_BINDING, Enum.RenderPriority.First.Value + 1, function(dt)
+	task.delay(0.7, function()
+		print("Tweening")
+		TweenCameraFOV(TRACK_FOV, FOV_TWEEN_TIME)
+	end)
+
+	-- Run at Camera+1 so we execute AFTER the default camera module (priority 200)
+	-- and can re-assert CameraSubject before the frame is rendered.
+	RunService:BindToRenderStep(RENDER_STEP_BINDING, Enum.RenderPriority.Camera.Value + 1, function(dt)
 		if not IsOnTrack or not TrackData then
 			RunService:UnbindFromRenderStep(RENDER_STEP_BINDING)
 			return
 		end
 
 		if not TrackCharHRP or not TrackCharHRP.Parent then return end
+
+		local cam = workspace.CurrentCamera
 		local originalChar = player.Character
 		local originalHRP = originalChar and originalChar:FindFirstChild("HumanoidRootPart")
 
@@ -684,7 +723,7 @@ local function OnTrackStarted(trackData: any)
 
 		-- Fire effect based on run progress
 		local progressPercent = math.clamp(DistanceTraveled / math.max(TrackData.totalDistance, 1), 0, 1)
-		UpdateFireEffectOnTrack(CurrentWorldName, progressPercent)
+		--UpdateFireEffectOnTrack(CurrentWorldName, progressPercent)
 
 		-- End condition
 		if ElapsedTime >= (TrackData.totalTime - TIME_EPSILON) or DistanceTraveled >= TrackData.totalDistance then
@@ -701,10 +740,14 @@ local function OnTrackStarted(trackData: any)
 		if alignPos then (alignPos :: AlignPosition).Position = targetPosition end
 		if alignOri then (alignOri :: AlignOrientation).CFrame = targetCFrame end
 
-		-- Mirror to original (anchored) HRP so server-attached VFX (Trail/Aura)
-		-- follow visually on this client. Original is hidden locally.
-		if originalHRP and originalHRP:IsA("BasePart") then
-			(originalHRP :: BasePart).CFrame = targetCFrame
+		-- Position camera behind and above TrackChar, facing the tangential direction.
+		-- targetCFrame.LookVector IS the tangential direction (from UpdateCircularPosition).
+		if cam then
+			local TRACK_CAM_HEIGHT = 5   -- studs above HRP centre
+			local TRACK_CAM_BACK = 20   -- studs behind HRP (positive local Z)
+			local cameraoffset = CFrame.new(0, TRACK_CAM_HEIGHT, TRACK_CAM_BACK)
+				--* CFrame.Angles(math.rad(-10), 0, 0)  -- slight downward tilt
+			cam.CFrame = targetCFrame * cameraoffset
 		end
 	end)
 end

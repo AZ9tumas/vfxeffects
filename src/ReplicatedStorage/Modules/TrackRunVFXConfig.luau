@@ -19,14 +19,14 @@ TrackRunVFXConfig.MinTotalPlayerDistance = 50_000
 
 TrackRunVFXConfig.Trail = {
 	Enabled = true,
-	ThresholdMode = "Both" :: ThresholdMode,
-	AbsoluteDistance = 50_000,
+	ThresholdMode = "AbsoluteDistance" :: ThresholdMode,
+	AbsoluteDistance = 13_500,
 	PercentageOfTotal = 0.15,
 } :: VFXEntry
 
 TrackRunVFXConfig.Aura = {
 	Enabled = true,
-	ThresholdMode = "Both" :: ThresholdMode,
+	ThresholdMode = "PercentageOfTotal" :: ThresholdMode,
 	AbsoluteDistance = 150_000,
 	PercentageOfTotal = 0.40,
 } :: VFXEntry
@@ -34,7 +34,7 @@ TrackRunVFXConfig.Aura = {
 TrackRunVFXConfig.Wormhole = {
 	Enabled = true,
 	ThresholdMode = "Both" :: ThresholdMode,
-	AbsoluteDistance = 500_000,
+	AbsoluteDistance = 1_500_000,
 	PercentageOfTotal = 0.70,
 } :: VFXEntry
 

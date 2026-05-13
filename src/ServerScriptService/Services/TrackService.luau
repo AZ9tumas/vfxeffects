@@ -145,17 +145,8 @@ local function CleanupBodyMovers(character: Model)
 	local rootPart = character:FindFirstChild("HumanoidRootPart")
 	if not rootPart then return end
 
-	local distanceValue = rootPart:FindFirstChild("TrackDistanceTraveled")
-	if distanceValue then distanceValue:Destroy() end
-
-	local alignPos = rootPart:FindFirstChild("AlignPosition")
-	if alignPos then alignPos:Destroy() end
-
-	local alignOri = rootPart:FindFirstChild("AlignOrientation")
-	if alignOri then alignOri:Destroy() end
-
-	local attachment = rootPart:FindFirstChild("TrackAttachment")
-	if attachment then attachment:Destroy() end
+	-- Unanchor the original character now that the run is over.
+	rootPart.Anchored = false
 end
 
 local function SetupBodyMoversForPlayer(player: Player)
@@ -289,15 +280,12 @@ function TrackService.Client:RequestTrackStart(player: Player): (boolean, string
 
 	local initialAngle = CalculateInitialAngle(playerPosition, center)
 
-	SetupBodyMoversForPlayer(player)
-
-	local distanceValue = rootPart:FindFirstChild("TrackDistanceTraveled")
-	if not distanceValue then
-		distanceValue = Instance.new("NumberValue")
-		distanceValue.Name = "TrackDistanceTraveled"
-		distanceValue.Value = 0
-		distanceValue.Parent = rootPart
-	end
+	-- Teleport the original character to the arena center so it stays out of
+	-- the way during the run. Anchor it so physics can't move it.
+	local arenaCenter = center
+	local spawnY = gateY + GetCharacterHeightOffset(character)
+	rootPart.CFrame = CFrame.new(arenaCenter.X, spawnY, arenaCenter.Z)
+	--rootPart.Anchored = true
 
 	local trackParams = CalculateTrackParameters(player, worldName)
 
