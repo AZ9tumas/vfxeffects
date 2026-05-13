@@ -20,7 +20,7 @@ TrackRunVFXConfig.MinTotalPlayerDistance = 50_000
 TrackRunVFXConfig.Trail = {
 	Enabled = true,
 	ThresholdMode = "AbsoluteDistance" :: ThresholdMode,
-	AbsoluteDistance = 13_500,
+	AbsoluteDistance = 4_000,
 	PercentageOfTotal = 0.15,
 } :: VFXEntry
 

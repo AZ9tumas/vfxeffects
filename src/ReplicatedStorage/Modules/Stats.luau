@@ -12,11 +12,11 @@ local Stats = {}
 Stats.NormalWalkSpeed = 16
 Stats.BaseSpeed = 50
 Stats.MaxTrackTime = 45
-Stats.RampDuration = 15
-Stats.InitialSpeed = 150
-Stats.RampTargetSpeed = 1_650
-Stats.MaxPhysicalSpeed =  2500
-Stats.BaseAcceleration = 150
+Stats.RampDuration = 10
+Stats.InitialSpeed = 100
+Stats.RampTargetSpeed = 700
+Stats.MaxPhysicalSpeed =  1500
+Stats.BaseAcceleration = 60
 
 -- Overdrive
 Stats.OverdriveTimeframe = 5

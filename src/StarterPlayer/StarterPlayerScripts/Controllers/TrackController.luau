@@ -20,6 +20,7 @@ local TrackRunVFXConfig = require(ReplicatedStorage.Modules.TrackRunVFXConfig)
 local WormHoleVFX = require(ReplicatedStorage.Modules.WormHoleVFX)
 local BlackScreenTransition = require(ReplicatedStorage.Modules.BlackScreenTransition)
 local BodyMoversTemplate = ReplicatedStorage:WaitForChild("Assets"):WaitForChild("BodyMovers")
+local TrailTemplate = ReplicatedStorage:WaitForChild("Assets"):WaitForChild("VFX"):WaitForChild("Trail")
 
 -- Collision groups so TrackChar and the (hidden) original char pass through
 -- each other. Registered once at module load; safe to call again if already
@@ -70,6 +71,7 @@ local TrackCharHum: Humanoid? = nil
 local TrackCharYOffset: number = 0
 local OriginalLocalTransparencies: { [BasePart]: number } = {}
 local ClientTrackY: number = 0
+local TrailApplied = false
 
 -- UI references (built in KnitInit)
 local liveScreenGui: ScreenGui
@@ -183,6 +185,44 @@ end
 -- =========================================================================
 -- TrackChar (client-only character clone driven by body movers)
 -- =========================================================================
+local function ApplyTrailToTrackChar()
+	if not TrackCharHRP then return end
+	if TrackCharHRP:FindFirstChild("TrackTrailA0") then return end
+	local trailPart = TrailTemplate:Clone()
+	local a0 = trailPart:FindFirstChild("0") :: Attachment
+	local a1 = trailPart:FindFirstChild("1") :: Attachment
+	if not a0 or not a1 then
+		trailPart:Destroy()
+		return
+	end
+	a0.Name = "TrackTrailA0"
+	a1.Name = "TrackTrailA1"
+	a0.Parent = TrackCharHRP
+	a1.Parent = TrackCharHRP
+	for _, child in trailPart:GetChildren() do
+		if child:IsA("Trail") then
+			child.Attachment0 = a0
+			child.Attachment1 = a1
+			child.Parent = TrackCharHRP
+		end
+	end
+	trailPart:Destroy()
+end
+
+local function UpdateTrackCharTrailLifetime(elapsedTime: number)
+	if not TrackCharHRP then return end
+	local lifetime = math.clamp(
+		TrackRunVFXConfig.TrailBaseLifetime + TrackRunVFXConfig.TrailGrowthRate * elapsedTime,
+		TrackRunVFXConfig.TrailBaseLifetime,
+		TrackRunVFXConfig.TrailMaxLifetime
+	)
+	for _, child in TrackCharHRP:GetChildren() do
+		if child:IsA("Trail") and child.Attachment0 and child.Attachment0.Name == "TrackTrailA0" then
+			child.Lifetime = lifetime
+		end
+	end
+end
+
 local function HideOriginalCharacterLocally(character: Model)
 	OriginalLocalTransparencies = {}
 	for _, d in character:GetDescendants() do
@@ -233,7 +273,7 @@ local function BuildTrackChar(original_char: Model): (Model?, BasePart?, number)
 		return nil, nil, 0
 	end
 
-	clone.Name = "TrackChar"
+	clone.Name = player.Name .. "TrackChar"
 
 	-- Strip embedded scripts so nothing fights us (BaseScript = Script | LocalScript).
 	for _, d in clone:GetDescendants() do
@@ -281,7 +321,6 @@ local function BuildTrackChar(original_char: Model): (Model?, BasePart?, number)
 	for _, d in clone:GetDescendants() do
 		if d:IsA("BasePart") then
 			d.CanCollide = false
-			d.CanQuery = false
 			d.CanTouch = false
 			d.Massless = true
 		end
@@ -397,6 +436,7 @@ local function TeardownTrackCharRun()
 	TrackCharHum = nil
 	TrackCharYOffset = 0
 	ClientTrackY = 0
+	TrailApplied = false
 end
 
 -- =========================================================================
@@ -637,7 +677,7 @@ local function OnTrackStarted(trackData: any)
 	DisablePlayerControls()
 	cancelButton.Visible = true
 
-	task.delay(0.7, function()
+	task.delay(2.5, function()
 		print("Tweening")
 		TweenCameraFOV(TRACK_FOV, FOV_TWEEN_TIME)
 	end)
@@ -712,6 +752,15 @@ local function OnTrackStarted(trackData: any)
 
 		UpdateDistanceDisplay(DistanceTraveled, TrackData.totalDistance)
 
+		-- Trail VFX: applied client-side since TrackChar is a client-only clone.
+		if TrackRunVFXConfig.IsThresholdMet(TrackRunVFXConfig.Trail, DistanceTraveled, playerMaxDist) then
+			if not TrailApplied then
+				ApplyTrailToTrackChar()
+				TrailApplied = true
+			end
+			UpdateTrackCharTrailLifetime(ElapsedTime)
+		end
+
 		-- Lap detection (for wormhole particle boost)
 		local lapThreshold = TrackData.startAngle + (2 * math.pi * (LapCount + 1))
 		if CurrentAngle >= lapThreshold then
@@ -734,6 +783,12 @@ local function OnTrackStarted(trackData: any)
 		end
 
 		-- Drive TrackChar via body-mover constraints
+		--[[
+			local targetPosition = Vector3.new(x, trackY, z)
+			local lookAtPos = targetPosition + Vector3.new(-math.sin(angle), 0, math.cos(angle))
+			local finalCFrame = CFrame.lookAt(targetPosition, lookAtPos)
+			return finalCFrame, targetPosition
+		]]
 		local targetCFrame, targetPosition = UpdateCircularPosition(center, radius, CurrentAngle, trackY)
 		local alignPos = TrackCharHRP:FindFirstChild("AlignPosition")
 		local alignOri = TrackCharHRP:FindFirstChild("AlignOrientation")
@@ -744,10 +799,10 @@ local function OnTrackStarted(trackData: any)
 		-- targetCFrame.LookVector IS the tangential direction (from UpdateCircularPosition).
 		if cam then
 			local TRACK_CAM_HEIGHT = 5   -- studs above HRP centre
-			local TRACK_CAM_BACK = 20   -- studs behind HRP (positive local Z)
+			local TRACK_CAM_BACK = 10   -- studs behind HRP (positive local Z)
 			local cameraoffset = CFrame.new(0, TRACK_CAM_HEIGHT, TRACK_CAM_BACK)
 				--* CFrame.Angles(math.rad(-10), 0, 0)  -- slight downward tilt
-			cam.CFrame = targetCFrame * cameraoffset
+			cam.CFrame = CFrame.new(TrackCharHRP.Position, TrackCharHRP.Position + targetCFrame.LookVector) * cameraoffset
 		end
 	end)
 end
