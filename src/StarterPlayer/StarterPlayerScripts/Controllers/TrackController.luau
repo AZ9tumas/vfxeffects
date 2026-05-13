@@ -18,6 +18,7 @@ local Stats = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("St
 local TrackRunVFXConfig = require(ReplicatedStorage.Modules.TrackRunVFXConfig)
 local WormHoleVFX = require(ReplicatedStorage.Modules.WormHoleVFX)
 local BlackScreenTransition = require(ReplicatedStorage.Modules.BlackScreenTransition)
+local BodyMoversTemplate = ReplicatedStorage:WaitForChild("Assets"):WaitForChild("BodyMovers")
 
 local player = Players.LocalPlayer
 local PlayerGui = player:WaitForChild("PlayerGui")
@@ -51,6 +52,14 @@ local CurrentAngle = 0
 local ElapsedTime = 0
 local DistanceTraveled = 0
 local LapCount = 0
+
+-- TrackChar (client-side clone) state
+local TrackChar: Model? = nil
+local TrackCharHRP: BasePart? = nil
+local TrackCharYOffset: number = 0
+local OriginalHRPWasAnchored: boolean = false
+local OriginalLocalTransparencies: { [BasePart]: number } = {}
+local ClientTrackY: number = 0
 
 -- UI references (built in KnitInit)
 local liveScreenGui: ScreenGui
@@ -159,6 +168,166 @@ local function UpdateCircularPosition(center: Vector3, radius: number, angle: nu
 	local lookAtPos = targetPosition + Vector3.new(-math.sin(angle), 0, math.cos(angle))
 	local finalCFrame = CFrame.lookAt(targetPosition, lookAtPos)
 	return finalCFrame, targetPosition
+end
+
+-- =========================================================================
+-- TrackChar (client-only character clone driven by body movers)
+-- =========================================================================
+local function HideOriginalCharacterLocally(character: Model)
+	OriginalLocalTransparencies = {}
+	for _, d in character:GetDescendants() do
+		if d:IsA("BasePart") then
+			OriginalLocalTransparencies[d] = d.LocalTransparencyModifier
+			d.LocalTransparencyModifier = 1
+		end
+	end
+end
+
+local function ShowOriginalCharacterLocally()
+	for part, t in pairs(OriginalLocalTransparencies) do
+		if part and part.Parent then
+			part.LocalTransparencyModifier = t
+		end
+	end
+	OriginalLocalTransparencies = {}
+end
+
+local function BuildTrackChar(original_char: Model): (Model?, BasePart?, number)
+	local clone = original_char:Clone()
+	print("Cloned original char:", clone)
+	clone.Name = "TrackChar"
+
+	-- Strip embedded scripts so nothing fights us
+	for _, d in clone:GetDescendants() do
+		if d:IsA("BaseScript") then d:Destroy() end
+	end
+
+	local hum = clone:FindFirstChildOfClass("Humanoid")
+	if hum then
+		for _, state in {
+			Enum.HumanoidStateType.Climbing,
+			Enum.HumanoidStateType.FallingDown,
+			Enum.HumanoidStateType.Freefall,
+			Enum.HumanoidStateType.GettingUp,
+			Enum.HumanoidStateType.Jumping,
+			Enum.HumanoidStateType.Landed,
+			Enum.HumanoidStateType.Ragdoll,
+			Enum.HumanoidStateType.Running,
+			Enum.HumanoidStateType.RunningNoPhysics,
+			Enum.HumanoidStateType.Seated,
+			Enum.HumanoidStateType.StrafingNoPhysics,
+			Enum.HumanoidStateType.Swimming,
+		} do
+			hum:SetStateEnabled(state, false)
+		end
+		hum:ChangeState(Enum.HumanoidStateType.Physics)
+		hum.PlatformStand = true
+		hum.AutoRotate = false
+		hum.WalkSpeed = 0
+		hum.JumpPower = 0
+	end
+
+	-- Non-colliding, massless parts — removes physics interference so
+	-- body movers can drive arbitrarily high speeds without engine resistance.
+	for _, d in clone:GetDescendants() do
+		if d:IsA("BasePart") then
+			d.CanCollide = false
+			d.CanQuery = false
+			d.CanTouch = false
+			d.Massless = true
+		end
+	end
+
+	clone.Parent = workspace
+
+	local hrp = clone:FindFirstChild("HumanoidRootPart") :: BasePart?
+	if not hrp then
+		clone:Destroy()
+		return nil, nil, 0
+	end
+
+	-- Bounding-box-based Y offset: distance from HRP centre to the bottom of
+	-- the rig (works for R6, R15, and custom rigs).
+	local cf, size = clone:GetBoundingBox()
+	local bottomY = cf.Y - size.Y / 2
+	local hrpToBottom = hrp.Position.Y - bottomY
+
+	return clone, hrp, hrpToBottom
+end
+
+local function AttachBodyMoversTo(hrp: BasePart)
+	local attachment = Instance.new("Attachment")
+	attachment.Name = "TrackAttachment"
+	attachment.Parent = hrp
+
+	local alignPos = BodyMoversTemplate.AlignPosition:Clone()
+	alignPos.Attachment0 = attachment
+	alignPos.Position = hrp.Position
+	alignPos.Parent = hrp
+
+	local alignOri = BodyMoversTemplate.AlignOrientation:Clone()
+	alignOri.Attachment0 = attachment
+	alignOri.CFrame = hrp.CFrame
+	alignOri.Parent = hrp
+end
+
+local function SetupTrackCharRun(originalChar: Model, trackData: any)
+	local originalHRP = originalChar:FindFirstChild("HumanoidRootPart")
+	if not originalHRP or not originalHRP:IsA("BasePart") then return end
+
+	local clone, cloneHRP, hrpToBottom = BuildTrackChar(originalChar)
+	if not clone or not cloneHRP then return end
+
+	TrackChar = clone
+	TrackCharHRP = cloneHRP
+	TrackCharYOffset = hrpToBottom
+
+	-- Client-side trackY = gate ground Y + bounding-box HRP offset
+	local gateY = trackData.gateY or (trackData.trackY - hrpToBottom)
+	ClientTrackY = gateY + hrpToBottom
+
+	-- Visual continuity: seed at original character's current CFrame
+	cloneHRP.CFrame = (originalHRP :: BasePart).CFrame
+
+	AttachBodyMoversTo(cloneHRP)
+
+	-- Anchor original HRP so we can drive its CFrame locally each frame
+	-- without physics fighting back; server-attached VFX (Trail/Aura) follow.
+	OriginalHRPWasAnchored = (originalHRP :: BasePart).Anchored
+	;(originalHRP :: BasePart).Anchored = true
+
+	-- LocalTransparencyModifier hides original only on this client.
+	HideOriginalCharacterLocally(originalChar)
+
+	-- Camera follows TrackChar
+	local camera = workspace.CurrentCamera
+	local cloneHum = clone:FindFirstChildOfClass("Humanoid")
+	if camera then
+		camera.CameraType = Enum.CameraType.Custom
+		if cloneHum then
+			camera.CameraSubject = cloneHum
+		else
+			camera.CameraSubject = cloneHRP
+		end
+	end
+end
+
+local function TeardownTrackCharRun()
+	ShowOriginalCharacterLocally()
+
+	local originalChar = player.Character
+	local originalHRP = originalChar and originalChar:FindFirstChild("HumanoidRootPart")
+	if originalHRP and originalHRP:IsA("BasePart") then
+		(originalHRP :: BasePart).Anchored = OriginalHRPWasAnchored
+	end
+
+	if TrackChar then
+		TrackChar:Destroy()
+	end
+	TrackChar = nil
+	TrackCharHRP = nil
+	TrackCharYOffset = 0
+	ClientTrackY = 0
 end
 
 -- =========================================================================
@@ -386,6 +555,13 @@ local function OnTrackStarted(trackData: any)
 	Log(string.format("Track started at %s, total distance: %.2f", tostring(trackData.gateName), trackData.totalDistance))
 
 	BlackScreenTransition.Play(0.5)
+
+	-- TrackChar setup (clone, body movers, hide original, camera shift)
+	local originalChar = player.Character
+	if originalChar then
+		SetupTrackCharRun(originalChar, trackData)
+	end
+
 	TweenCameraFOV(TRACK_FOV, FOV_TWEEN_TIME)
 	ApplyTrackLightingEffects()
 	UpdateDistanceDisplay(0, trackData.totalDistance)
@@ -398,14 +574,13 @@ local function OnTrackStarted(trackData: any)
 			return
 		end
 
-		local character = player.Character
-		if not character then return end
-		local rootPart = character:FindFirstChild("HumanoidRootPart")
-		if not rootPart or not rootPart:IsA("BasePart") then return end
+		if not TrackCharHRP or not TrackCharHRP.Parent then return end
+		local originalChar = player.Character
+		local originalHRP = originalChar and originalChar:FindFirstChild("HumanoidRootPart")
 
 		local radius = TrackData.worldRadius
 		local center = TrackData.trackCenter
-		local trackY = TrackData.trackY
+		local trackY = ClientTrackY
 		local maxPhysicalSpeed = TrackData.maxPhysicalSpeed or Stats.MaxPhysicalSpeed
 		if not center or not radius or not trackY then return end
 
@@ -468,12 +643,6 @@ local function OnTrackStarted(trackData: any)
 			end
 		end
 
-		-- Drive distance value for server
-		local distanceValue = rootPart:FindFirstChild("TrackDistanceTraveled")
-		if distanceValue and distanceValue:IsA("NumberValue") then
-			distanceValue.Value = DistanceTraveled
-		end
-
 		-- Fire effect based on run progress
 		local progressPercent = math.clamp(DistanceTraveled / math.max(TrackData.totalDistance, 1), 0, 1)
 		UpdateFireEffectOnTrack(CurrentWorldName, progressPercent)
@@ -486,12 +655,18 @@ local function OnTrackStarted(trackData: any)
 			return
 		end
 
-		-- Drive character via constraints
+		-- Drive TrackChar via body-mover constraints
 		local targetCFrame, targetPosition = UpdateCircularPosition(center, radius, CurrentAngle, trackY)
-		local alignPos = rootPart:FindFirstChild("AlignPosition")
-		local alignOri = rootPart:FindFirstChild("AlignOrientation")
+		local alignPos = TrackCharHRP:FindFirstChild("AlignPosition")
+		local alignOri = TrackCharHRP:FindFirstChild("AlignOrientation")
 		if alignPos then (alignPos :: AlignPosition).Position = targetPosition end
 		if alignOri then (alignOri :: AlignOrientation).CFrame = targetCFrame end
+
+		-- Mirror to original (anchored) HRP so server-attached VFX (Trail/Aura)
+		-- follow visually on this client. Original is hidden locally.
+		if originalHRP and originalHRP:IsA("BasePart") then
+			(originalHRP :: BasePart).CFrame = targetCFrame
+		end
 	end)
 end
 
@@ -510,6 +685,7 @@ local function OnTrackEnded(trackData: any)
 	LapCount = 0
 
 	task.spawn(function() WormHoleVFX.Deactivate() end)
+	TeardownTrackCharRun()
 	ResetCamera()
 
 	player.CameraMinZoomDistance = 0.5

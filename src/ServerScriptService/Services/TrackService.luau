@@ -301,6 +301,15 @@ function TrackService.Client:RequestTrackStart(player: Player): (boolean, string
 
 	local trackParams = CalculateTrackParameters(player, worldName)
 
+	-- TODO: Create a new "track character"
+	--[[
+		1. Character will be named as the "TrackChar"
+		2. All baseparts.CanCollide = false and Anchored = false
+		3. Y-axis control as well by body movers (full control)
+		3.1 Calculate the correct Y axis offset value using bounds, etc. Has to be proper so it works for all characters.
+		Idea: This allows us to simulate much higher physical speeds
+	]]
+
 	PlayersOnTrack[userId] = {
 		player = player,
 		worldName = worldName,
@@ -335,6 +344,7 @@ function TrackService.Client:RequestTrackStart(player: Player): (boolean, string
 		worldRadius = radius,
 		trackCenter = center,
 		trackY = trackY,
+		gateY = gateY,
 		maxPhysicalSpeed = Stats.MaxPhysicalSpeed,
 		nextWorld = nil,
 		unlockRequirement = nil,
