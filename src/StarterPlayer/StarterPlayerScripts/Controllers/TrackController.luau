@@ -193,17 +193,56 @@ local function ShowOriginalCharacterLocally()
 end
 
 local function BuildTrackChar(original_char: Model): (Model?, BasePart?, number)
-	local clone = original_char:Clone()
-	print("Cloned original char:", clone)
+	-- Roblox sets Character.Archivable = false on every spawned character.
+	-- Clone() on a non-archivable instance returns nil, not an error — so
+	-- we must temporarily enable it on the root and any non-archivable
+	-- descendants (some accessories can also have Archivable = false).
+	local nonArchivable: { Instance } = {}
+	if not original_char.Archivable then
+		original_char.Archivable = true
+		table.insert(nonArchivable, original_char)
+	end
+	for _, d in original_char:GetDescendants() do
+		if not d.Archivable then
+			d.Archivable = true
+			table.insert(nonArchivable, d)
+		end
+	end
+
+	local clone: Model? = original_char:Clone()
+
+	-- Restore Archivable immediately so the original character is unchanged.
+	for _, inst in nonArchivable do
+		if inst and inst.Parent then
+			inst.Archivable = false
+		end
+	end
+
+	if not clone then
+		warn("[TrackChar] Clone() returned nil even after setting Archivable=true")
+		return nil, nil, 0
+	end
+
 	clone.Name = "TrackChar"
 
-	-- Strip embedded scripts so nothing fights us
+	-- Strip embedded scripts so nothing fights us (BaseScript = Script | LocalScript).
 	for _, d in clone:GetDescendants() do
 		if d:IsA("BaseScript") then d:Destroy() end
 	end
 
 	local hum = clone:FindFirstChildOfClass("Humanoid")
 	if hum then
+		-- Destroy the Animator: stripping BaseScripts removes the Animate
+		-- LocalScript but leaves the Animator instance alive inside the
+		-- Humanoid. The engine can still drive idle/walk poses through it,
+		-- fighting our PlatformStand + Physics state. Removing it prevents that.
+		local animator = hum:FindFirstChildOfClass("Animator")
+		if animator then animator:Destroy() end
+
+		-- Hide the cloned humanoid's name tag and health bar.
+		hum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+		hum.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOff
+
 		for _, state in {
 			Enum.HumanoidStateType.Climbing,
 			Enum.HumanoidStateType.FallingDown,
