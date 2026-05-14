@@ -43,6 +43,31 @@ TrackRunVFXConfig.TrailBaseLifetime = 0.3
 TrackRunVFXConfig.TrailMaxLifetime = 4.0
 TrackRunVFXConfig.TrailGrowthRate = 0.15
 
+-- =========================================================================
+-- Trail Camera VFX — four-phase cinematic camera sequence played when the
+-- Trail VFX activates. See TrailCameraVFX.luau for full design notes.
+-- All durations are in seconds; tweak freely to retune the cinematic.
+-- =========================================================================
+
+-- Phase 1: hold position, rotate so the camera's LookVector matches the
+-- direction from the arena centre to the TrackChar.
+TrackRunVFXConfig.TrailCameraInitialTurnPeriod = 0.25
+
+-- Phase 2: dolly the camera from its phase-1 position back to the arena
+-- centre (XZ collapsed, Y preserved) while continuing to face the runner.
+TrackRunVFXConfig.TrailCameraReverseToCenterPeriod = 0.35
+
+-- Phase 3: at the arena centre, rotate in place from "facing the runner"
+-- to "facing straight down".
+TrackRunVFXConfig.TrailCameraFaceDownPeriod = 0.4
+
+-- Phase 4: with the camera facing straight down, "reverse" along its
+-- -LookVector (i.e. rise straight up in world space) over this duration.
+TrackRunVFXConfig.TrailCameraAscendPeriod = 0.45
+
+-- Total studs of vertical ascent during phase 4.
+TrackRunVFXConfig.TrailCameraAscendDistance = 100
+
 -- Wormhole transition
 TrackRunVFXConfig.WormholeFirstPersonZoom = 0.5
 TrackRunVFXConfig.WormholeZoomTweenDuration = 2.0

@@ -18,6 +18,7 @@ local Knit = require(ReplicatedStorage:WaitForChild("Packages"):WaitForChild("Kn
 local Stats = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("Stats"))
 local TrackRunVFXConfig = require(ReplicatedStorage.Modules.TrackRunVFXConfig)
 local WormHoleVFX = require(ReplicatedStorage.Modules.WormHoleVFX)
+local TrailCameraVFX = require(ReplicatedStorage.Modules.TrailCameraVFX)
 local BlackScreenTransition = require(ReplicatedStorage.Modules.BlackScreenTransition)
 local BodyMoversTemplate = ReplicatedStorage:WaitForChild("Assets"):WaitForChild("BodyMovers")
 local TrailTemplate = ReplicatedStorage:WaitForChild("Assets"):WaitForChild("VFX"):WaitForChild("Trail")
@@ -719,6 +720,11 @@ local function OnTrackStarted(trackData: any)
 		local aboveWormhole = TrackRunVFXConfig.IsThresholdMet(TrackRunVFXConfig.Wormhole, DistanceTraveled, playerMaxDist)
 
 		if aboveWormhole and not WormHoleVFX.IsActive() then
+			-- Wormhole owns the camera once it activates; hand off cleanly
+			-- from the trail-camera cinematic if it is still running.
+			if TrailCameraVFX.IsActive() then
+				TrailCameraVFX.Deactivate()
+			end
 			task.spawn(function()
 				local tweenInfo = TweenInfo.new(TrackRunVFXConfig.WormholeZoomTweenDuration, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
 				local zoomTarget = TrackRunVFXConfig.WormholeFirstPersonZoom
@@ -757,6 +763,12 @@ local function OnTrackStarted(trackData: any)
 			if not TrailApplied then
 				ApplyTrailToTrackChar()
 				TrailApplied = true
+				-- Kick off the four-phase cinematic camera the moment the
+				-- trail goes live. TrailCameraVFX seeds itself with the
+				-- current camera's CFrame so the hand-off is seamless.
+				if not TrailCameraVFX.IsActive() and not WormHoleVFX.IsActive() then
+					TrailCameraVFX.Activate(TrackCharHRP, center)
+				end
 			end
 			UpdateTrackCharTrailLifetime(ElapsedTime)
 		end
@@ -797,7 +809,9 @@ local function OnTrackStarted(trackData: any)
 
 		-- Position camera behind and above TrackChar, facing the tangential direction.
 		-- targetCFrame.LookVector IS the tangential direction (from UpdateCircularPosition).
-		if cam then
+		-- Skip when another VFX owns the camera (trail cinematic / wormhole)
+		-- so we don't fight its CFrame writes for the same frame.
+		if cam and not TrailCameraVFX.IsActive() and not WormHoleVFX.IsActive() then
 			local TRACK_CAM_HEIGHT = 5   -- studs above HRP centre
 			local TRACK_CAM_BACK = 10   -- studs behind HRP (positive local Z)
 			local cameraoffset = CFrame.new(0, TRACK_CAM_HEIGHT, TRACK_CAM_BACK)
@@ -822,6 +836,7 @@ local function OnTrackEnded(trackData: any)
 	LapCount = 0
 
 	task.spawn(function() WormHoleVFX.Deactivate() end)
+	TrailCameraVFX.Deactivate()
 	TeardownTrackCharRun()
 	ResetCamera()
 

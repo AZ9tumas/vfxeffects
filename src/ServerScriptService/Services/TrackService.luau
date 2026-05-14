@@ -11,6 +11,7 @@ local Workspace = game:GetService("Workspace")
 
 local Knit = require(ReplicatedStorage.Packages.Knit)
 local Stats = require(ReplicatedStorage.Modules.Stats)
+local CharTransparencyhandler = require(ReplicatedStorage.Modules.CharacterTransparency)
 local BodyMoversTemplate = ReplicatedStorage:WaitForChild("Assets"):WaitForChild("BodyMovers")
 
 -- ===== Hardcoded values (replaces player-data driven fuel + history) =====
@@ -173,7 +174,10 @@ end
 
 local function CleanupTrackRun(player: Player)
 	local character = player.Character
-	if character then CleanupBodyMovers(character) end
+	if character then
+		CleanupBodyMovers(character)
+		CharTransparencyhandler.RestoreCharacterTransparency(character)
+	end
 
 	local ok, TrackVFXService = pcall(Knit.GetService, "TrackVFXService")
 	if ok and TrackVFXService then
@@ -286,6 +290,8 @@ function TrackService.Client:RequestTrackStart(player: Player): (boolean, string
 	local spawnY = gateY + GetCharacterHeightOffset(character)
 	rootPart.CFrame = CFrame.new(arenaCenter.X, spawnY, arenaCenter.Z)
 	--rootPart.Anchored = true
+
+	CharTransparencyhandler.EnableCharacterTransparency(character, 1)
 
 	local trackParams = CalculateTrackParameters(player, worldName)
 
