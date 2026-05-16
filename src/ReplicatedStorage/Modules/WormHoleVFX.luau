@@ -25,6 +25,7 @@ local shakeConnection: RBXScriptConnection? = nil
 local baseCFrame: CFrame? = nil
 local savedBrightness: number? = nil
 local savedAmbient: Color3? = nil
+local savedOutdoorAmbient: Color3? = nil
 local savedClockTime: number? = nil
 local fadeGui: ScreenGui? = nil
 local fadeFrame: Frame? = nil
@@ -169,6 +170,9 @@ function WormHoleVFX.Activate()
 	-- runner already in continuous-shake territory. Adding another shake on
 	-- top felt redundant and jerky next to the smooth interpolation.
 	FadeBlack(0)
+	-- Kill all ambient/sky lighting while the screen is black so that when
+	-- it fades back in only the wormhole particles are visible.
+	WormHoleVFX.DarkenLighting()
 
 	local cameraPart = area:FindFirstChild("CameraPart")
 	local wormHolePart = area:FindFirstChild("WormHole")
@@ -238,15 +242,18 @@ end
 function WormHoleVFX.DarkenLighting()
 	if savedBrightness == nil then savedBrightness = Lighting.Brightness end
 	if savedAmbient == nil then savedAmbient = Lighting.Ambient end
+	if savedOutdoorAmbient == nil then savedOutdoorAmbient = Lighting.OutdoorAmbient end
 	if savedClockTime == nil then savedClockTime = Lighting.ClockTime end
 	Lighting.Brightness = 0
 	Lighting.Ambient = Color3.new(0, 0, 0)
+	Lighting.OutdoorAmbient = Color3.new(0, 0, 0)
 	Lighting.ClockTime = 0
 end
 
 function WormHoleVFX.RestoreLighting()
 	if savedBrightness ~= nil then Lighting.Brightness = savedBrightness; savedBrightness = nil end
 	if savedAmbient ~= nil then Lighting.Ambient = savedAmbient; savedAmbient = nil end
+	if savedOutdoorAmbient ~= nil then Lighting.OutdoorAmbient = savedOutdoorAmbient; savedOutdoorAmbient = nil end
 	if savedClockTime ~= nil then Lighting.ClockTime = savedClockTime; savedClockTime = nil end
 end
 
