@@ -80,6 +80,13 @@ TrackRunVFXConfig.TrailCameraReturnPeriod = 0.35
 TrackRunVFXConfig.TrackCameraHeight = 5  -- studs above HRP centre
 TrackRunVFXConfig.TrackCameraBack   = 10 -- studs behind HRP (along +Z in local space)
 
+-- Entry-blend duration (transition from the pre-run default Custom camera
+-- pose into the in-arena tangent view). The render-step interpolates from
+-- the captured pre-Scriptable CFrame to the live tangent CFrame over this
+-- period using a cubic ease-out. Choose 0 to disable (hard cut covered
+-- only by the BlackScreenTransition).
+TrackRunVFXConfig.TrackCameraEntryBlendPeriod = 0.35
+
 -- =========================================================================
 -- Continuous subtle camera shake applied throughout the entire track run
 -- (matches the wormhole-active "light" shake; tweak independently if needed).
@@ -127,6 +134,47 @@ function TrackRunVFXConfig.GetContinuousRunShakeCFrame(t: number): CFrame
 	local oRot = math.sin(t * baseFreq * CONT_SHAKE_FREQ_ROT) * rotMag
 	return CFrame.new(ox, oy, 0) * CFrame.Angles(oRot, oRot * 0.5, 0)
 end
+
+-- =========================================================================
+-- AfterImages VFX (continuous, track-run-only ghost-trail of TrackChar).
+--
+-- Spawn cadence is a fixed interval (matches the upstream Sandevistan repo:
+-- https://github.com/AZ9tumas/AfterImages). Tune `SpawnInterval` directly,
+-- or scale globally with `RateMultiplier` (and at runtime via
+-- AfterImagesVFX.SetRateMultiplier(mult)).
+--
+--   effectiveWait = SpawnInterval / RateMultiplier
+--
+-- Set Enabled = false (or RateMultiplier = 0) to disable.
+-- =========================================================================
+TrackRunVFXConfig.AfterImages = {
+	Enabled = true,
+
+	-- Seconds between two consecutive after-image spawns.
+	SpawnInterval = 0.05,
+
+	-- Global rate scalar (1.0 = SpawnInterval as-is, 2.0 = twice as dense).
+	RateMultiplier = 1.0,
+
+	-- Pool size. Each cached clone is a stripped-down copy of the TrackChar.
+	CachedClones = 30,
+
+	-- Fade-out timing (mirrors Sandevistan).
+	HoldTime       = 0.01, -- delay before fade starts (lets the image drift away from runner)
+	FadeOutTime    = 1.5,  -- time held at fully visible
+	SpringDuration = 0.3,  -- after fade, spring takes this long to complete
+	SpringParams   = { frequency = 0.3, tension = 1000, friction = 30, damping = 1 },
+
+	-- Cycling gradient highlight + base transparency on highlight fill.
+	Gradients = {
+		Color3.fromRGB(83, 255, 103),
+		Color3.fromRGB(83, 255, 226),
+		Color3.fromRGB(0,  34,  255),
+		Color3.fromRGB(255, 42, 74),
+	},
+	GradientCycleTime         = 6.0, -- seconds to cycle through all gradient stops
+	HighlightBaseTransparency = 0.4, -- highlight fill transparency at "fully visible"
+}
 
 function TrackRunVFXConfig.IsThresholdMet(
 	vfxEntry: VFXEntry,

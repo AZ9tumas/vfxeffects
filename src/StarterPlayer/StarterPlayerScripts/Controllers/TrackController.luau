@@ -19,6 +19,7 @@ local Stats = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("St
 local TrackRunVFXConfig = require(ReplicatedStorage.Modules.TrackRunVFXConfig)
 local WormHoleVFX = require(ReplicatedStorage.Modules.WormHoleVFX)
 local TrailCameraVFX = require(ReplicatedStorage.Modules.TrailCameraVFX)
+local AfterImagesVFX = require(ReplicatedStorage.Modules.AfterImagesVFX)
 local CharacterTransparency = require(ReplicatedStorage.Modules.CharacterTransparency)
 local BlackScreenTransition = require(ReplicatedStorage.Modules.BlackScreenTransition)
 local BodyMoversTemplate = ReplicatedStorage:WaitForChild("Assets"):WaitForChild("BodyMovers")
@@ -75,6 +76,12 @@ local TrackCharYOffset: number = 0
 local ClientTrackY: number = 0
 local TrailApplied = false
 local WormholeActivationStarted = false  -- guards against re-entry during the async hand-off
+
+-- Tangent-camera entry blend: captured pre-Scriptable CFrame + start clock,
+-- used by the render-step to lerp into the in-arena tangent view over
+-- TrackRunVFXConfig.TrackCameraEntryBlendPeriod.
+local TrackCameraEntryStartCFrame: CFrame? = nil
+local TrackCameraEntryStartTime: number = 0
 
 -- UI references (built in KnitInit)
 local liveScreenGui: ScreenGui
@@ -315,7 +322,7 @@ local function BuildTrackChar(original_char: Model): (Model?, BasePart?, number)
 	-- ignores collisions between it and the hidden original character.
 	for _, d in clone:GetDescendants() do
 		if d:IsA("BasePart") then
-			PhysicsService:SetPartCollisionGroup(d, "TrackChar")
+			d.CollisionGroup = "TrackChar"
 		end
 	end
 
@@ -380,7 +387,7 @@ local function SetupTrackCharRun(originalChar: Model, trackData: any)
 	-- the engine ignores collisions between it and the TrackChar.
 	for _, d in originalChar:GetDescendants() do
 		if d:IsA("BasePart") then
-			PhysicsService:SetPartCollisionGroup(d, "OriginalChar")
+			d.CollisionGroup = "OriginalChar"
 		end
 	end
 
@@ -391,6 +398,11 @@ local function SetupTrackCharRun(originalChar: Model, trackData: any)
 	TrackCharHum = clone:FindFirstChildOfClass("Humanoid")
 	local camera = workspace.CurrentCamera
 	if camera then
+		-- Capture the camera's current CFrame BEFORE we go Scriptable so the
+		-- render-step can blend from it into the tangent view, removing the
+		-- hard cut between the default Custom camera and the in-arena pose.
+		TrackCameraEntryStartCFrame = camera.CFrame
+		TrackCameraEntryStartTime = os.clock()
 		-- Scriptable gives us full CFrame control; the default camera module is bypassed.
 		camera.CameraType = Enum.CameraType.Scriptable
 	end
@@ -411,7 +423,7 @@ local function TeardownTrackCharRun()
 	if originalChar then
 		for _, d in originalChar:GetDescendants() do
 			if d:IsA("BasePart") then
-				PhysicsService:SetPartCollisionGroup(d, "Default")
+				d.CollisionGroup = "Default"
 			end
 		end
 	end
@@ -426,6 +438,8 @@ local function TeardownTrackCharRun()
 	ClientTrackY = 0
 	TrailApplied = false
 	WormholeActivationStarted = false
+	TrackCameraEntryStartCFrame = nil
+	TrackCameraEntryStartTime = 0
 end
 
 -- =========================================================================
@@ -577,20 +591,33 @@ local function ResetCamera()
 	local character = player.Character
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 
-	local existing = workspace:FindFirstChildWhichIsA("Camera")
-	if existing then existing:Destroy() end
+	-- Reuse the active camera rather than destroying it. Destroying +
+	-- re-creating causes a hard cut from whatever the last scripted CFrame
+	-- was straight to the player's spawn pose. Switching CameraType to
+	-- Custom on the SAME Camera instance lets the engine interpolate
+	-- smoothly from the current CFrame back to the player's third-person
+	-- view. We also tween the FOV down in lock-step.
+	local cam = workspace.CurrentCamera
+	if not cam then
+		cam = Instance.new("Camera")
+		cam.Parent = workspace
+		workspace.CurrentCamera = cam
+	end
 
-	local newCamera = Instance.new("Camera")
-	newCamera.FieldOfView = DEFAULT_FOV
-	newCamera.CameraType = Enum.CameraType.Custom
-	if humanoid then newCamera.CameraSubject = humanoid end
-	newCamera.Parent = workspace
-	workspace.CurrentCamera = newCamera
+	TweenService:Create(cam, TweenInfo.new(FOV_TWEEN_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+		FieldOfView = DEFAULT_FOV,
+	}):Play()
+
+	if humanoid then
+		cam.CameraSubject = humanoid
+	end
+	cam.CameraType = Enum.CameraType.Custom
 
 	task.delay(0.5, function()
-		if workspace.CurrentCamera == newCamera and humanoid then
-			workspace.CurrentCamera.CameraType = Enum.CameraType.Custom
-			workspace.CurrentCamera.CameraSubject = humanoid
+		local c = workspace.CurrentCamera
+		if c and humanoid then
+			c.CameraType = Enum.CameraType.Custom
+			c.CameraSubject = humanoid
 		end
 	end)
 end
@@ -660,6 +687,12 @@ local function OnTrackStarted(trackData: any)
 		SetupTrackCharRun(originalChar, trackData)
 	end
 
+	-- Continuous after-image VFX: active for the entire track run, rate
+	-- driven by physicalSpeed (pushed in below per-frame).
+	if TrackChar then
+		AfterImagesVFX.Activate(TrackChar)
+	end
+
 	--TweenCameraFOV(TRACK_FOV, FOV_TWEEN_TIME)
 	--ApplyTrackLightingEffects()
 	UpdateDistanceDisplay(0, trackData.totalDistance)
@@ -719,14 +752,9 @@ local function OnTrackStarted(trackData: any)
 					TrailCameraVFX.RunReturnPhase() -- yields until done
 					TrailCameraVFX.Deactivate()
 				end
-				local tweenInfo = TweenInfo.new(TrackRunVFXConfig.WormholeZoomTweenDuration, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
-				local zoomTarget = TrackRunVFXConfig.WormholeFirstPersonZoom
-				local tween = TweenService:Create(player, tweenInfo, {
-					CameraMinZoomDistance = zoomTarget,
-					CameraMaxZoomDistance = zoomTarget,
-				})
-				tween:Play()
-				tween.Completed:Wait()
+				-- Camera is already Scriptable at this point; tweening
+				-- CameraMin/MaxZoomDistance has no effect on Scriptable cameras
+				-- and only adds a delay. Activate immediately.
 				WormHoleVFX.Activate()
 			end)
 		end
@@ -807,6 +835,26 @@ local function OnTrackStarted(trackData: any)
 		if cam and not TrailCameraVFX.IsActive() and not WormHoleVFX.IsActive() then
 			local cameraoffset = CFrame.new(0, TrackRunVFXConfig.TrackCameraHeight, TrackRunVFXConfig.TrackCameraBack)
 			local baseCFrame = CFrame.new(TrackCharHRP.Position, TrackCharHRP.Position + targetCFrame.LookVector) * cameraoffset
+
+			-- Entry blend: while still within TrackCameraEntryBlendPeriod of
+			-- SetupTrackCharRun, interpolate from the captured pre-Scriptable
+			-- CFrame to the live tangent CFrame using a cubic ease-out. After
+			-- the period elapses, the start CFrame is cleared and the tangent
+			-- CFrame is used directly.
+			if TrackCameraEntryStartCFrame then
+				local blendPeriod = TrackRunVFXConfig.TrackCameraEntryBlendPeriod
+				if blendPeriod <= 0 then
+					TrackCameraEntryStartCFrame = nil
+				else
+					local alpha = math.clamp((os.clock() - TrackCameraEntryStartTime) / blendPeriod, 0, 1)
+					local ease = 1 - (1 - alpha) ^ 3 -- cubic ease-out
+					baseCFrame = TrackCameraEntryStartCFrame:Lerp(baseCFrame, ease)
+					if alpha >= 1 then
+						TrackCameraEntryStartCFrame = nil
+					end
+				end
+			end
+
 			-- Apply the subtle continuous shake that runs throughout the track
 			-- run. Multiplied in local space so the shake reads correctly
 			-- regardless of camera orientation.
@@ -831,6 +879,7 @@ local function OnTrackEnded(trackData: any)
 
 	task.spawn(function() WormHoleVFX.Deactivate() end)
 	TrailCameraVFX.Deactivate()
+	AfterImagesVFX.Deactivate()
 	TeardownTrackCharRun()
 	ResetCamera()
 
