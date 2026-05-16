@@ -45,8 +45,8 @@ end
 local function GetSpawnLocationForWorld(worldName: string): BasePart?
 	local worldFolder = GetWorldFolder(worldName)
 	if worldFolder then
-		local spawn = worldFolder:FindFirstChild("SpawnLocation")
-		if spawn and spawn:IsA("BasePart") then return spawn end
+		local spawn_ = worldFolder:FindFirstChild("SpawnLocation")
+		if spawn_ and spawn_:IsA("BasePart") then return spawn_ end
 	end
 	-- Fallback: any SpawnLocation in workspace
 	for _, v in Workspace:GetDescendants() do
