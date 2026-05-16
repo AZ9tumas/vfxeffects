@@ -33,6 +33,16 @@
 	                           (since LookVector points straight down, the
 	                           world-space motion is straight up), revealing
 	                           the full arena/track from above.
+	  5. ReturnToCharacter   — (Triggered explicitly via RunReturnPhase, used
+	                           right before WormHoleVFX takes over.) Camera
+	                           interpolates from wherever phase 4 left it back
+	                           to the in-run third-person tangent offset
+	                           (right next to the runner), mirroring the intro
+	                           in reverse.
+
+	A subtle continuous shake (TrackRunVFXConfig.GetContinuousRunShakeCFrame)
+	is multiplied onto the final camera CFrame every frame so the shake is
+	preserved across all phases.
 
 	All phase transitions use eased CFrame interpolation; each new phase
 	captures the actual end-CFrame of the previous phase so the sequence is
@@ -52,11 +62,12 @@ local TrailCameraVFX = {}
 -- can reference phases without typo-prone string literals.
 -- =========================================================================
 local Phase = table.freeze({
-	InitialCameraTurn = "InitialCameraTurn",
-	ReverseToCenter   = "ReverseToCenter",
-	FaceDown          = "FaceDown",
-	AscendReverse     = "AscendReverse",
-	Finished          = "Finished",
+	InitialCameraTurn  = "InitialCameraTurn",
+	ReverseToCenter    = "ReverseToCenter",
+	FaceDown           = "FaceDown",
+	AscendReverse      = "AscendReverse",
+	ReturnToCharacter  = "ReturnToCharacter",
+	Finished           = "Finished",
 })
 TrailCameraVFX.Phase = Phase
 
@@ -77,6 +88,10 @@ local phaseElapsed: number = 0
 local phaseStartCFrame: CFrame = CFrame.new()   -- camera CFrame at the moment the active phase began
 local phaseStartPosition: Vector3 = Vector3.zero -- convenience alias of phaseStartCFrame.Position
 local ascendStartY: number = 0                  -- world Y captured at start of phase 4 for distance maths
+
+-- BindableEvent used to signal completion of the ReturnToCharacter phase
+-- so that RunReturnPhase() can yield until the cinematic actually finishes.
+local returnPhaseCompleted: BindableEvent? = nil
 
 -- =========================================================================
 -- Helpers
@@ -217,6 +232,41 @@ local function updateAscendReverse(dt: number): boolean
 end
 
 -- =========================================================================
+-- Phase 5 (explicit-trigger): ReturnToCharacter
+-- Interpolates from wherever phase 4 (or whichever phase was active) left
+-- the camera back to the in-run third-person tangent offset. Used as the
+-- "pre-wormhole" camera lead-in so the wormhole always activates from the
+-- familiar chase pose. Target is recomputed every frame from the live HRP
+-- CFrame so the camera lands cleanly even as the runner continues moving.
+-- =========================================================================
+local function computeTangentOffsetCFrame(): CFrame?
+	local hrp = trackCharHRP
+	if not hrp or not hrp.Parent then return nil end
+	local height = TrackRunVFXConfig.TrackCameraHeight
+	local back = TrackRunVFXConfig.TrackCameraBack
+	-- HRP.CFrame.LookVector is kept tangential by the body-mover AlignOrientation.
+	return CFrame.new(hrp.Position, hrp.Position + hrp.CFrame.LookVector) * CFrame.new(0, height, back)
+end
+
+local function updateReturnToCharacter(dt: number): boolean
+	local duration = TrackRunVFXConfig.TrailCameraReturnPeriod
+	phaseElapsed = phaseElapsed + dt
+	local alpha = easeInOut(phaseElapsed / math.max(duration, 1e-4))
+
+	local cam = trailCamera
+	if not cam then return true end
+
+	local target = computeTangentOffsetCFrame()
+	if not target then
+		-- HRP gone; bail out of the phase rather than freezing.
+		return true
+	end
+	cam.CFrame = phaseStartCFrame:Lerp(target, alpha)
+
+	return phaseElapsed >= duration
+end
+
+-- =========================================================================
 -- RenderStep driver
 -- =========================================================================
 local function onRenderStep(dt: number)
@@ -245,7 +295,21 @@ local function onRenderStep(dt: number)
 	elseif currentPhase == Phase.AscendReverse then
 		phaseDone = updateAscendReverse(dt)
 		if phaseDone then currentPhase = Phase.Finished end
+	elseif currentPhase == Phase.ReturnToCharacter then
+		phaseDone = updateReturnToCharacter(dt)
+		if phaseDone then
+			currentPhase = Phase.Finished
+			if returnPhaseCompleted then
+				returnPhaseCompleted:Fire()
+			end
+		end
 	end
+
+	-- Continuous subtle shake applied on TOP of the phase's CFrame write.
+	-- Multiplying in LOCAL space keeps the shake oriented to the camera so
+	-- the same constants feel right whether the camera is looking forward,
+	-- straight down, or anywhere in between.
+	cam.CFrame = cam.CFrame * TrackRunVFXConfig.GetContinuousRunShakeCFrame(tick())
 end
 
 -- =========================================================================
@@ -310,6 +374,14 @@ function TrailCameraVFX.Deactivate()
 		renderBound = false
 	end
 
+	if returnPhaseCompleted then
+		-- Fire any pending waiters so they don't hang if Deactivate races
+		-- with an in-progress RunReturnPhase() call.
+		returnPhaseCompleted:Fire()
+		returnPhaseCompleted:Destroy()
+		returnPhaseCompleted = nil
+	end
+
 	if trailCamera then
 		trailCamera:Destroy()
 	end
@@ -323,6 +395,29 @@ function TrailCameraVFX.Deactivate()
 	trackCharHRP = nil
 	previousCamera = nil
 	currentPhase = Phase.Finished
+end
+
+--[[
+	RunReturnPhase()
+	  Switches the active phase to ReturnToCharacter and YIELDS the calling
+	  thread until the interpolation completes. Designed to be called right
+	  before WormHoleVFX.Activate so the camera arrives back at the runner
+	  with the in-run tangent offset, giving the wormhole a clean hand-off.
+
+	  No-op (returns immediately) if the module is not active.
+]]
+function TrailCameraVFX.RunReturnPhase()
+	if not isActive then return end
+
+	-- Reset / create the completion event so multiple invocations don't
+	-- inherit a previously-fired state.
+	if returnPhaseCompleted then
+		returnPhaseCompleted:Destroy()
+	end
+	returnPhaseCompleted = Instance.new("BindableEvent")
+
+	beginPhase(Phase.ReturnToCharacter)
+	returnPhaseCompleted.Event:Wait()
 end
 
 function TrailCameraVFX.IsActive(): boolean

@@ -5,6 +5,7 @@ local module = {}
 module.Characters = {} :: { [number]: { part: BasePart, originalTransparency: number } }
 
 function module.EnableCharacterTransparency(char: Model, transparency: number)
+    print("Character transparency enabled", char)
     for _, part in char:GetDescendants() do
         if part:IsA("BasePart") then
             table.insert(module.Characters, { part = part, originalTransparency = part.Transparency })

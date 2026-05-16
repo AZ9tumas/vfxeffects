@@ -11,7 +11,6 @@ local Workspace = game:GetService("Workspace")
 
 local Knit = require(ReplicatedStorage.Packages.Knit)
 local Stats = require(ReplicatedStorage.Modules.Stats)
-local CharTransparencyhandler = require(ReplicatedStorage.Modules.CharacterTransparency)
 local BodyMoversTemplate = ReplicatedStorage:WaitForChild("Assets"):WaitForChild("BodyMovers")
 
 -- ===== Hardcoded values (replaces player-data driven fuel + history) =====
@@ -176,7 +175,6 @@ local function CleanupTrackRun(player: Player)
 	local character = player.Character
 	if character then
 		CleanupBodyMovers(character)
-		CharTransparencyhandler.RestoreCharacterTransparency(character)
 	end
 
 	local ok, TrackVFXService = pcall(Knit.GetService, "TrackVFXService")
@@ -291,8 +289,6 @@ function TrackService.Client:RequestTrackStart(player: Player): (boolean, string
 	rootPart.CFrame = CFrame.new(arenaCenter.X, spawnY, arenaCenter.Z)
 	--rootPart.Anchored = true
 
-	CharTransparencyhandler.EnableCharacterTransparency(character, 1)
-
 	local trackParams = CalculateTrackParameters(player, worldName)
 
 	-- TODO: Create a new "track character"
@@ -302,6 +298,8 @@ function TrackService.Client:RequestTrackStart(player: Player): (boolean, string
 		3. Y-axis control as well by body movers (full control)
 		3.1 Calculate the correct Y axis offset value using bounds, etc. Has to be proper so it works for all characters.
 		Idea: This allows us to simulate much higher physical speeds
+
+		This has been implemented under Track Controller
 	]]
 
 	PlayersOnTrack[userId] = {

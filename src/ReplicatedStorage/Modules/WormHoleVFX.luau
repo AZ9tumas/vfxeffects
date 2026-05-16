@@ -164,7 +164,10 @@ function WormHoleVFX.Activate()
 		end
 	end
 
-	ShakeNormalCamera(TrackRunVFXConfig.WormholePreShakeDuration)
+	-- Pre-wormhole intense shake removed: the trail-camera "Return" phase
+	-- now runs immediately before this, so the camera arrives back at the
+	-- runner already in continuous-shake territory. Adding another shake on
+	-- top felt redundant and jerky next to the smooth interpolation.
 	FadeBlack(0)
 
 	local cameraPart = area:FindFirstChild("CameraPart")

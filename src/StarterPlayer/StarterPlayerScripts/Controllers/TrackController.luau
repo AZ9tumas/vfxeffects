@@ -19,6 +19,7 @@ local Stats = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("St
 local TrackRunVFXConfig = require(ReplicatedStorage.Modules.TrackRunVFXConfig)
 local WormHoleVFX = require(ReplicatedStorage.Modules.WormHoleVFX)
 local TrailCameraVFX = require(ReplicatedStorage.Modules.TrailCameraVFX)
+local CharacterTransparency = require(ReplicatedStorage.Modules.CharacterTransparency)
 local BlackScreenTransition = require(ReplicatedStorage.Modules.BlackScreenTransition)
 local BodyMoversTemplate = ReplicatedStorage:WaitForChild("Assets"):WaitForChild("BodyMovers")
 local TrailTemplate = ReplicatedStorage:WaitForChild("Assets"):WaitForChild("VFX"):WaitForChild("Trail")
@@ -70,9 +71,10 @@ local TrackChar: Model? = nil
 local TrackCharHRP: BasePart? = nil
 local TrackCharHum: Humanoid? = nil
 local TrackCharYOffset: number = 0
-local OriginalLocalTransparencies: { [BasePart]: number } = {}
+
 local ClientTrackY: number = 0
 local TrailApplied = false
+local WormholeActivationStarted = false  -- guards against re-entry during the async hand-off
 
 -- UI references (built in KnitInit)
 local liveScreenGui: ScreenGui
@@ -224,24 +226,6 @@ local function UpdateTrackCharTrailLifetime(elapsedTime: number)
 	end
 end
 
-local function HideOriginalCharacterLocally(character: Model)
-	OriginalLocalTransparencies = {}
-	for _, d in character:GetDescendants() do
-		if d:IsA("BasePart") then
-			OriginalLocalTransparencies[d] = d.LocalTransparencyModifier
-			d.LocalTransparencyModifier = 1
-		end
-	end
-end
-
-local function ShowOriginalCharacterLocally()
-	for part, t in pairs(OriginalLocalTransparencies) do
-		if part and part.Parent then
-			part.LocalTransparencyModifier = t
-		end
-	end
-	OriginalLocalTransparencies = {}
-end
 
 local function BuildTrackChar(original_char: Model): (Model?, BasePart?, number)
 	-- Roblox sets Character.Archivable = false on every spawned character.
@@ -400,8 +384,9 @@ local function SetupTrackCharRun(originalChar: Model, trackData: any)
 		end
 	end
 
-	-- LocalTransparencyModifier hides original only on this client.
-	HideOriginalCharacterLocally(originalChar)
+	-- Hide the original character on this client now that the TrackChar is fully
+	-- set up and visible. CharacterTransparency saves originals for restoration.
+	CharacterTransparency.EnableCharacterTransparency(originalChar, 1)
 
 	TrackCharHum = clone:FindFirstChildOfClass("Humanoid")
 	local camera = workspace.CurrentCamera
@@ -412,9 +397,11 @@ local function SetupTrackCharRun(originalChar: Model, trackData: any)
 end
 
 local function TeardownTrackCharRun()
-	ShowOriginalCharacterLocally()
-
 	local originalChar = player.Character
+	if originalChar then
+		CharacterTransparency.RestoreCharacterTransparency(originalChar)
+	end
+
 	local originalHRP = originalChar and originalChar:FindFirstChild("HumanoidRootPart")
 	if originalHRP and originalHRP:IsA("BasePart") then
 		originalHRP.Anchored = false
@@ -438,6 +425,7 @@ local function TeardownTrackCharRun()
 	TrackCharYOffset = 0
 	ClientTrackY = 0
 	TrailApplied = false
+	WormholeActivationStarted = false
 end
 
 -- =========================================================================
@@ -719,13 +707,18 @@ local function OnTrackStarted(trackData: any)
 		local playerMaxDist = TrackData.playerMaxDistance or 0
 		local aboveWormhole = TrackRunVFXConfig.IsThresholdMet(TrackRunVFXConfig.Wormhole, DistanceTraveled, playerMaxDist)
 
-		if aboveWormhole and not WormHoleVFX.IsActive() then
-			-- Wormhole owns the camera once it activates; hand off cleanly
-			-- from the trail-camera cinematic if it is still running.
-			if TrailCameraVFX.IsActive() then
-				TrailCameraVFX.Deactivate()
-			end
+		if aboveWormhole and not WormHoleVFX.IsActive() and not WormholeActivationStarted then
+			WormholeActivationStarted = true
+			-- Hand-off sequence: if the trail-camera cinematic is currently
+			-- running, run its "return" phase (interpolate camera back to
+			-- the in-run third-person offset) BEFORE the wormhole takes
+			-- over. This produces a smooth lead-in instead of a hard cut
+			-- from the overhead view straight to the wormhole pose.
 			task.spawn(function()
+				if TrailCameraVFX.IsActive() then
+					TrailCameraVFX.RunReturnPhase() -- yields until done
+					TrailCameraVFX.Deactivate()
+				end
 				local tweenInfo = TweenInfo.new(TrackRunVFXConfig.WormholeZoomTweenDuration, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
 				local zoomTarget = TrackRunVFXConfig.WormholeFirstPersonZoom
 				local tween = TweenService:Create(player, tweenInfo, {
@@ -812,11 +805,12 @@ local function OnTrackStarted(trackData: any)
 		-- Skip when another VFX owns the camera (trail cinematic / wormhole)
 		-- so we don't fight its CFrame writes for the same frame.
 		if cam and not TrailCameraVFX.IsActive() and not WormHoleVFX.IsActive() then
-			local TRACK_CAM_HEIGHT = 5   -- studs above HRP centre
-			local TRACK_CAM_BACK = 10   -- studs behind HRP (positive local Z)
-			local cameraoffset = CFrame.new(0, TRACK_CAM_HEIGHT, TRACK_CAM_BACK)
-				--* CFrame.Angles(math.rad(-10), 0, 0)  -- slight downward tilt
-			cam.CFrame = CFrame.new(TrackCharHRP.Position, TrackCharHRP.Position + targetCFrame.LookVector) * cameraoffset
+			local cameraoffset = CFrame.new(0, TrackRunVFXConfig.TrackCameraHeight, TrackRunVFXConfig.TrackCameraBack)
+			local baseCFrame = CFrame.new(TrackCharHRP.Position, TrackCharHRP.Position + targetCFrame.LookVector) * cameraoffset
+			-- Apply the subtle continuous shake that runs throughout the track
+			-- run. Multiplied in local space so the shake reads correctly
+			-- regardless of camera orientation.
+			cam.CFrame = baseCFrame * TrackRunVFXConfig.GetContinuousRunShakeCFrame(tick())
 		end
 	end)
 end
