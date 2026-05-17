@@ -17,13 +17,13 @@ local PhysicsService = game:GetService("PhysicsService")
 local Knit = require(ReplicatedStorage:WaitForChild("Packages"):WaitForChild("Knit"))
 local Stats = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("Stats"))
 local TrackRunVFXConfig = require(ReplicatedStorage.Modules.TrackRunVFXConfig)
-local WormHoleVFX = require(ReplicatedStorage.Modules.WormHoleVFX)
-local TrailCameraVFX = require(ReplicatedStorage.Modules.TrailCameraVFX)
-local AfterImagesVFX = require(ReplicatedStorage.Modules.AfterImagesVFX)
 local CharacterTransparency = require(ReplicatedStorage.Modules.CharacterTransparency)
 local BlackScreenTransition = require(ReplicatedStorage.Modules.BlackScreenTransition)
+local VFXHandler = require(ReplicatedStorage.Modules.VFXObjects)
 local BodyMoversTemplate = ReplicatedStorage:WaitForChild("Assets"):WaitForChild("BodyMovers")
-local TrailTemplate = ReplicatedStorage:WaitForChild("Assets"):WaitForChild("VFX"):WaitForChild("Trail")
+
+-- Camera-owning VFX (Trail cinematic / Wormhole) are queried via VFXHandler
+-- so we can skip our own camera writes while one of them owns the camera.
 
 -- Collision groups so TrackChar and the (hidden) original char pass through
 -- each other. Registered once at module load; safe to call again if already
@@ -74,8 +74,7 @@ local TrackCharHum: Humanoid? = nil
 local TrackCharYOffset: number = 0
 
 local ClientTrackY: number = 0
-local TrailApplied = false
-local WormholeActivationStarted = false  -- guards against re-entry during the async hand-off
+
 
 -- Tangent-camera entry blend: captured pre-Scriptable CFrame + start clock,
 -- used by the render-step to lerp into the in-arena tangent view over
@@ -193,47 +192,30 @@ local function UpdateCircularPosition(center: Vector3, radius: number, angle: nu
 end
 
 -- =========================================================================
+-- VFX context
+--
+-- Every frame we hand VFXHandler a fresh snapshot of the runtime state it
+-- needs. The handler owns the queue / active lists internally; we just
+-- call Init / Update / Deactivate at the appropriate lifecycle points.
+-- =========================================================================
+local function BuildVFXContext(dt: number): any
+	local playerMaxDist = (TrackData and TrackData.playerMaxDistance) or 0
+	local trackCenter = TrackData and TrackData.trackCenter
+	return {
+		trackChar = TrackChar,
+		trackCharHRP = TrackCharHRP,
+		trackCenter = trackCenter,
+		trackData = TrackData,
+		distanceTraveled = DistanceTraveled,
+		elapsedTime = ElapsedTime,
+		playerMaxDistance = playerMaxDist,
+		dt = dt,
+	}
+end
+
+-- =========================================================================
 -- TrackChar (client-only character clone driven by body movers)
 -- =========================================================================
-local function ApplyTrailToTrackChar()
-	if not TrackCharHRP then return end
-	if TrackCharHRP:FindFirstChild("TrackTrailA0") then return end
-	local trailPart = TrailTemplate:Clone()
-	local a0 = trailPart:FindFirstChild("0") :: Attachment
-	local a1 = trailPart:FindFirstChild("1") :: Attachment
-	if not a0 or not a1 then
-		trailPart:Destroy()
-		return
-	end
-	a0.Name = "TrackTrailA0"
-	a1.Name = "TrackTrailA1"
-	a0.Parent = TrackCharHRP
-	a1.Parent = TrackCharHRP
-	for _, child in trailPart:GetChildren() do
-		if child:IsA("Trail") then
-			child.Attachment0 = a0
-			child.Attachment1 = a1
-			child.Parent = TrackCharHRP
-		end
-	end
-	trailPart:Destroy()
-end
-
-local function UpdateTrackCharTrailLifetime(elapsedTime: number)
-	if not TrackCharHRP then return end
-	local lifetime = math.clamp(
-		TrackRunVFXConfig.TrailBaseLifetime + TrackRunVFXConfig.TrailGrowthRate * elapsedTime,
-		TrackRunVFXConfig.TrailBaseLifetime,
-		TrackRunVFXConfig.TrailMaxLifetime
-	)
-	for _, child in TrackCharHRP:GetChildren() do
-		if child:IsA("Trail") and child.Attachment0 and child.Attachment0.Name == "TrackTrailA0" then
-			child.Lifetime = lifetime
-		end
-	end
-end
-
-
 local function BuildTrackChar(original_char: Model): (Model?, BasePart?, number)
 	-- Roblox sets Character.Archivable = false on every spawned character.
 	-- Clone() on a non-archivable instance returns nil, not an error — so
@@ -436,8 +418,6 @@ local function TeardownTrackCharRun()
 	TrackCharHum = nil
 	TrackCharYOffset = 0
 	ClientTrackY = 0
-	TrailApplied = false
-	WormholeActivationStarted = false
 	TrackCameraEntryStartCFrame = nil
 	TrackCameraEntryStartTime = 0
 end
@@ -687,11 +667,9 @@ local function OnTrackStarted(trackData: any)
 		SetupTrackCharRun(originalChar, trackData)
 	end
 
-	-- Continuous after-image VFX: active for the entire track run, rate
-	-- driven by physicalSpeed (pushed in below per-frame).
-	if TrackChar then
-		AfterImagesVFX.Activate(TrackChar)
-	end
+	-- Initialise the VFX runtime: always-on objects activate now, the rest
+	-- queue up and activate as their distance thresholds are met.
+	VFXHandler:Init(BuildVFXContext(0))
 
 	--TweenCameraFOV(TRACK_FOV, FOV_TWEEN_TIME)
 	--ApplyTrackLightingEffects()
@@ -736,41 +714,6 @@ local function OnTrackStarted(trackData: any)
 		)
 		local physicalSpeed = math.min(calculatedSpeed, maxPhysicalSpeed)
 
-		-- Wormhole activation
-		local playerMaxDist = TrackData.playerMaxDistance or 0
-		local aboveWormhole = TrackRunVFXConfig.IsThresholdMet(TrackRunVFXConfig.Wormhole, DistanceTraveled, playerMaxDist)
-
-		if aboveWormhole and not WormHoleVFX.IsActive() and not WormholeActivationStarted then
-			WormholeActivationStarted = true
-			-- Hand-off sequence: if the trail-camera cinematic is currently
-			-- running, run its "return" phase (interpolate camera back to
-			-- the in-run third-person offset) BEFORE the wormhole takes
-			-- over. This produces a smooth lead-in instead of a hard cut
-			-- from the overhead view straight to the wormhole pose.
-			task.spawn(function()
-				if TrailCameraVFX.IsActive() then
-					TrailCameraVFX.RunReturnPhase() -- yields until done
-					TrailCameraVFX.Deactivate()
-				end
-				-- Camera is already Scriptable at this point; tweening
-				-- CameraMin/MaxZoomDistance has no effect on Scriptable cameras
-				-- and only adds a delay. Activate immediately.
-				WormHoleVFX.Activate()
-			end)
-		end
-
-		local wormholeDistThreshold = math.max(
-			TrackRunVFXConfig.Wormhole.AbsoluteDistance,
-			playerMaxDist * TrackRunVFXConfig.Wormhole.PercentageOfTotal
-		)
-		local wormholeSpeedRatio = math.clamp(
-			(DistanceTraveled - wormholeDistThreshold) / math.max(1, TrackData.totalDistance - wormholeDistThreshold),
-			0, 1
-		)
-		if WormHoleVFX.IsActive() then
-			WormHoleVFX.UpdateParticleEffects(wormholeSpeedRatio)
-		end
-
 		local angularVelocity = Stats.LinearSpeedToAngularVelocity(physicalSpeed, radius)
 		CurrentAngle = CurrentAngle + angularVelocity * dt
 
@@ -779,28 +722,15 @@ local function OnTrackStarted(trackData: any)
 
 		UpdateDistanceDisplay(DistanceTraveled, TrackData.totalDistance)
 
-		-- Trail VFX: applied client-side since TrackChar is a client-only clone.
-		if TrackRunVFXConfig.IsThresholdMet(TrackRunVFXConfig.Trail, DistanceTraveled, playerMaxDist) then
-			if not TrailApplied then
-				ApplyTrailToTrackChar()
-				TrailApplied = true
-				-- Kick off the four-phase cinematic camera the moment the
-				-- trail goes live. TrailCameraVFX seeds itself with the
-				-- current camera's CFrame so the hand-off is seamless.
-				if not TrailCameraVFX.IsActive() and not WormHoleVFX.IsActive() then
-					TrailCameraVFX.Activate(TrackCharHRP, center)
-				end
-			end
-			UpdateTrackCharTrailLifetime(ElapsedTime)
-		end
+		-- Tick the VFX runtime: updates currently-active effects and promotes
+		-- any queue entries whose distance threshold has been crossed.
+		VFXHandler:Update(BuildVFXContext(dt))
 
 		-- Lap detection (for wormhole particle boost)
 		local lapThreshold = TrackData.startAngle + (2 * math.pi * (LapCount + 1))
 		if CurrentAngle >= lapThreshold then
 			LapCount = LapCount + 1
-			if WormHoleVFX.IsActive() then
-				WormHoleVFX.TriggerLapBoost()
-			end
+			VFXHandler.Wormhole:OnLap()
 		end
 
 		-- Fire effect based on run progress
@@ -832,7 +762,7 @@ local function OnTrackStarted(trackData: any)
 		-- targetCFrame.LookVector IS the tangential direction (from UpdateCircularPosition).
 		-- Skip when another VFX owns the camera (trail cinematic / wormhole)
 		-- so we don't fight its CFrame writes for the same frame.
-		if cam and not TrailCameraVFX.IsActive() and not WormHoleVFX.IsActive() then
+		if cam and not VFXHandler.Trail:IsActive() and not VFXHandler.Wormhole:IsActive() then
 			local cameraoffset = CFrame.new(0, TrackRunVFXConfig.TrackCameraHeight, TrackRunVFXConfig.TrackCameraBack)
 			local baseCFrame = CFrame.new(TrackCharHRP.Position, TrackCharHRP.Position + targetCFrame.LookVector) * cameraoffset
 
@@ -877,9 +807,7 @@ local function OnTrackEnded(trackData: any)
 	DistanceTraveled = 0
 	LapCount = 0
 
-	task.spawn(function() WormHoleVFX.Deactivate() end)
-	TrailCameraVFX.Deactivate()
-	AfterImagesVFX.Deactivate()
+	VFXHandler:Deactivate()
 	TeardownTrackCharRun()
 	ResetCamera()
 
